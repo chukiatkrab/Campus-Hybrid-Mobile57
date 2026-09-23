@@ -18,6 +18,10 @@ const MAPPING = {
   'paperplane.fill': 'send',
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
+  'person.fill': 'person',
+  'map.fill': 'map',
+  'camera.fill': 'photo-camera',
+  'bell.fill': 'notifications',
 } satisfies Record<string, MaterialIconName>;
 
 /**
