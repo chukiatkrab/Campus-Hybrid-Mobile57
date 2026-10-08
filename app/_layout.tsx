@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import * as Notifications from 'expo-notifications';
 import 'react-native-reanimated';
+import { ensureNotificationPermission } from '@/services/notifications';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
@@ -14,6 +15,11 @@ export const unstable_settings = {
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   const router = useRouter();
+
+  // ตั้งค่า Notification Channel และตรวจสิทธิ์ตั้งแต่เริ่มเปิดแอป
+  useEffect(() => {
+    ensureNotificationPermission().catch(console.error);
+  }, []);
 
   // จัดการการตอบสนองเมื่อผู้ใช้แตะ Notification (ทั้ง Cold Start และ Foreground/Background)
   useEffect(() => {

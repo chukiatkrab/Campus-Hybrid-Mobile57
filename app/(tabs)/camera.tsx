@@ -15,32 +15,32 @@ import {
 } from "expo-camera";
 import * as MediaLibrary from "expo-media-library";
 import { Ionicons } from "@expo/vector-icons";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { useGameStore } from "@/storage/useGameStore";
 
-type FilterType = "normal" | "bw" | "vivid";
+type FilterType = "hud" | "normal" | "night";
 
-const filters: { id: FilterType; name: string }[] = [
-  { id: "normal", name: "Normal" },
-  { id: "bw", name: "B&W" },
-  { id: "vivid", name: "Vivid" },
-];
+export default function QuestCameraScreen() {
+  const router = useRouter();
+  const { questId, questTitle } = useLocalSearchParams<{ questId?: string; questTitle?: string }>();
 
-export default function CameraScreen() {
+  const completeQuest = useGameStore((s) => s.completeQuest);
+  const activeQuest = useGameStore((s) => s.quests.find((q) => q.id === questId));
+
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [mediaPermission, requestMediaPermission] = MediaLibrary.usePermissions();
 
   const [image, setImage] = useState<string | null>(null);
-  const [selectedFilter, setSelectedFilter] = useState<FilterType>("normal");
   const [facing, setFacing] = useState<"back" | "front">("back");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSavedLocally, setIsSavedLocally] = useState(false);
 
   const cameraRef = useRef<React.ComponentRef<typeof CameraView>>(null);
 
-  // -----------------------------
-  // Permission Check
-  // -----------------------------
   if (!cameraPermission) {
     return (
       <View style={styles.loading}>
-        <Text style={styles.loadingText}>Loading Camera...</Text>
+        <Text style={styles.loadingText}>Initializing Quest Scanner...</Text>
       </View>
     );
   }
@@ -49,53 +49,42 @@ export default function CameraScreen() {
     return (
       <SafeAreaView style={styles.permissionScreen}>
         <View style={styles.iconCircle}>
-          <Ionicons name="camera" size={54} color="#0a7ea4" />
+          <Ionicons name="scan-circle" size={60} color="#38bdf8" />
         </View>
-
-        <Text style={styles.permissionTitle}>Camera Access</Text>
-
+        <Text style={styles.permissionTitle}>Camera HUD Access</Text>
         <Text style={styles.permissionDescription}>
-          Allow camera access to capture your special moments and places.
+          เปิดสิทธิ์ใช้งานกล้องเพื่อสแกนพื้นที่และถ่ายภาพหลักฐานการทำภารกิจ
         </Text>
-
-        <Pressable
-          style={styles.allowButton}
-          onPress={requestCameraPermission}
-        >
-          <Text style={styles.allowButtonText}>Allow Camera</Text>
+        <Pressable style={styles.allowButton} onPress={requestCameraPermission}>
+          <Text style={styles.allowButtonText}>อนุญาตการเข้าถึงกล้อง</Text>
         </Pressable>
       </SafeAreaView>
     );
   }
 
-  // -----------------------------
-  // Actions
-  // -----------------------------
   const takePicture = async () => {
     if (!cameraRef.current) return;
-
     try {
-      const photo: CameraCapturedPicture | undefined =
-        await cameraRef.current.takePictureAsync({
-          quality: 0.9,
-          exif: false,
-        });
-
+      const photo: CameraCapturedPicture | undefined = await cameraRef.current.takePictureAsync({
+        quality: 0.85,
+        exif: false,
+      });
       if (photo?.uri) {
         setImage(photo.uri);
+        setIsSavedLocally(false);
       }
     } catch (error) {
-      console.log(error);
-      Alert.alert("Camera Error", "Unable to take the photo.");
+      Alert.alert("Camera Error", "ไม่สามารถบันทึกภาพได้");
     }
   };
 
   const retakePicture = () => {
     setImage(null);
-    setSelectedFilter("normal");
+    setIsSavedLocally(false);
   };
 
-  const saveImage = async () => {
+  // บันทึกรูปลง Gallery มือถือแยกต่างหาก
+  const handleSaveToGallery = async () => {
     if (!image) return;
 
     try {
@@ -106,95 +95,107 @@ export default function CameraScreen() {
 
       if (!currentMediaPerm?.granted) {
         Alert.alert(
-          "Permission Required",
-          "Please allow access to your photo library to save photos."
+          "ต้องการสิทธิ์",
+          "กรุณาอนุญาตการเข้าถึง Photo Library เพื่อบันทึกรูปภาพลงในเครื่อง"
         );
         return;
       }
 
       await MediaLibrary.createAssetAsync(image);
-      Alert.alert("Saved!", "Photo saved successfully to your gallery.");
+      setIsSavedLocally(true);
+      Alert.alert("💾 บันทึกสำเร็จ!", "บันทึกภาพถ่ายลงในแกลเลอรีรูปภาพของเครื่องเรียบร้อยแล้ว");
     } catch (error) {
-      console.log(error);
-      Alert.alert("Save Failed", "Unable to save the photo.");
+      Alert.alert("บันทึกล้มเหลว", "ไม่สามารถบันทึกรูปลงเครื่องได้");
+    }
+  };
+
+  const submitQuestProof = async () => {
+    if (!image) return;
+
+    try {
+      setIsSubmitting(true);
+
+      // บันทึกรูปลง Gallery ผู้ใช้อัตโนมัติ (หากได้รับสิทธิ์)
+      if (mediaPermission?.granted) {
+        try {
+          await MediaLibrary.createAssetAsync(image);
+          setIsSavedLocally(true);
+        } catch (e) {}
+      }
+
+      // ส่งผลเควสต์เข้า Game Store
+      const targetId = questId || (activeQuest ? activeQuest.id : "q-kku-gate");
+      const res = await completeQuest(targetId, image);
+
+      Alert.alert(
+        "🎉 ส่งหลักฐานภารกิจสำเร็จ!",
+        `รูปภาพถูกบันทึกเรียบร้อย และคุณได้รับ +${res.xpGained} XP ${res.leveledUp ? `\n🌟 ยินดีด้วย! เลเวลอัปเป็น Lv.${res.newLevel}!` : ""}`,
+        [
+          {
+            text: "ดูบนแผนที่",
+            onPress: () => router.replace("/(tabs)"),
+          },
+          {
+            text: "ไปหน้ากระเป๋าไอเทม",
+            onPress: () => router.replace("/(tabs)/profile"),
+          },
+        ]
+      );
+    } catch (e) {
+      Alert.alert("ผิดพลาด", "ไม่สามารถส่งหลักฐานได้ในขณะนี้");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const toggleCameraFacing = () => {
-    setFacing((current) => (current === "back" ? "front" : "back"));
+    setFacing((cur) => (cur === "back" ? "front" : "back"));
   };
 
-  // -----------------------------
-  // Live Camera Screen
-  // -----------------------------
+  // Live Camera Viewfinder
   if (!image) {
     return (
       <View style={styles.container}>
-        <CameraView
-          ref={cameraRef}
-          style={styles.camera}
-          facing={facing}
-        />
+        <CameraView ref={cameraRef} style={styles.camera} facing={facing} />
 
+        {/* Sci-Fi Scanner Overlay */}
         <SafeAreaView style={styles.cameraOverlay} pointerEvents="box-none">
           {/* Header */}
           <View style={styles.header}>
             <View>
-              <Text style={styles.logo}>CAMERA</Text>
-              <Text style={styles.subtitle}>Capture your moment</Text>
-            </View>
-
-            <View style={styles.headerButtons}>
-              <Pressable style={styles.flipButton} onPress={toggleCameraFacing}>
-                <Ionicons name="camera-reverse-outline" size={24} color="#fff" />
-              </Pressable>
-
-              <View style={styles.liveBadge}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                 <View style={styles.liveDot} />
-                <Text style={styles.liveText}>LIVE</Text>
+                <Text style={styles.logo}>QUEST SCANNER</Text>
               </View>
+              <Text style={styles.subtitle}>
+                {questTitle ? `ภารกิจ: ${questTitle}` : "โหมดสแกนหลักฐานพิกัด"}
+              </Text>
             </View>
+
+            <Pressable style={styles.flipButton} onPress={toggleCameraFacing}>
+              <Ionicons name="camera-reverse-outline" size={22} color="#fff" />
+            </Pressable>
           </View>
 
-          {/* Focus Frame */}
-          <View style={styles.focusFrame}>
+          {/* Scanner Reticle Frame */}
+          <View style={styles.reticleContainer}>
             <View style={[styles.corner, styles.topLeft]} />
             <View style={[styles.corner, styles.topRight]} />
             <View style={[styles.corner, styles.bottomLeft]} />
             <View style={[styles.corner, styles.bottomRight]} />
+
+            <View style={styles.centerCross}>
+              <Ionicons name="scan" size={40} color="rgba(56, 189, 248, 0.6)" />
+            </View>
+            <Text style={styles.scannerCoords}>LAT: 16.4730° N | LON: 102.8206° E</Text>
           </View>
 
           {/* Bottom Panel */}
           <View style={styles.bottomPanel}>
-            <Text style={styles.sectionTitle}>FILTER</Text>
+            <Text style={styles.sectionTitle}>
+              {questTitle ? `จัดวางวัตถุเป้าหมายให้อยู่ในกรอบเล็ง` : `ถ่ายภาพเพื่อบันทึกประวัติการสำรวจ`}
+            </Text>
 
-            <View style={styles.filterRow}>
-              {filters.map((filter) => {
-                const active = selectedFilter === filter.id;
-
-                return (
-                  <Pressable
-                    key={filter.id}
-                    onPress={() => setSelectedFilter(filter.id)}
-                    style={[
-                      styles.filterButton,
-                      active && styles.filterButtonActive,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.filterText,
-                        active && styles.filterTextActive,
-                      ]}
-                    >
-                      {filter.name}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            {/* Shutter */}
             <Pressable style={styles.shutter} onPress={takePicture}>
               <View style={styles.shutterInner} />
             </Pressable>
@@ -204,80 +205,68 @@ export default function CameraScreen() {
     );
   }
 
-  // -----------------------------
-  // Preview Screen
-  // -----------------------------
+  // Preview & Submit Proof Screen
   return (
     <View style={styles.container}>
-      <Image
-        source={{ uri: image }}
-        style={[
-          styles.previewImage,
-          selectedFilter === "bw" && styles.blackWhitePreview,
-          selectedFilter === "vivid" && styles.vividPreview,
-        ]}
-      />
+      <Image source={{ uri: image }} style={styles.previewImage} />
 
-      {/* Vivid overlay */}
-      {selectedFilter === "vivid" && (
-        <View pointerEvents="none" style={styles.vividOverlay} />
-      )}
-
-      {/* B&W overlay */}
-      {selectedFilter === "bw" && (
-        <View pointerEvents="none" style={styles.bwOverlay} />
-      )}
+      {/* Futuristic Watermark Overlay */}
+      <View style={styles.watermarkOverlay}>
+        <View style={styles.watermarkBadge}>
+          <Ionicons name="shield-checkmark" size={16} color="#38bdf8" />
+          <Text style={styles.watermarkText}>CAMPUSQUEST PROOF VERIFIED</Text>
+        </View>
+        <Text style={styles.watermarkDate}>
+          {new Date().toLocaleString("th-TH")} • GPS VERIFIED
+        </Text>
+      </View>
 
       <SafeAreaView style={styles.previewOverlay}>
-        {/* Preview Header */}
         <View style={styles.previewHeader}>
-          <Text style={styles.previewTitle}>PHOTO PREVIEW</Text>
+          <Text style={styles.previewTitle}>ตรวจสอบและบันทึกภาพถ่าย</Text>
 
-          <View style={styles.filterBadge}>
-            <Text style={styles.filterBadgeText}>
-              {filters.find((f) => f.id === selectedFilter)?.name}
-            </Text>
-          </View>
+          {isSavedLocally && (
+            <View style={styles.savedBadge}>
+              <Ionicons name="checkmark-circle" size={14} color="#22c55e" />
+              <Text style={styles.savedBadgeText}>บันทึกลงเครื่องแล้ว</Text>
+            </View>
+          )}
         </View>
 
-        {/* Preview Bottom */}
         <View style={styles.previewBottom}>
-          <Text style={styles.sectionTitle}>CHOOSE FILTER</Text>
+          <Text style={styles.previewQuestName}>
+            {questTitle || activeQuest?.title || "ภาพถ่ายหลักฐานการสำรวจ"}
+          </Text>
+          <Text style={styles.previewQuestDesc}>
+            คุณสามารถบันทึกรูปลงเครื่อง หรือส่งเป็นหลักฐานภารกิจเพื่อรับรางวัล XP & Coins
+          </Text>
 
-          <View style={styles.filterRow}>
-            {filters.map((filter) => {
-              const active = selectedFilter === filter.id;
+          {/* Secondary Action: Save to Device Gallery */}
+          <Pressable
+            style={[styles.saveGalleryBtn, isSavedLocally && styles.saveGalleryBtnDone]}
+            onPress={handleSaveToGallery}
+          >
+            <Ionicons
+              name={isSavedLocally ? "checkmark-circle" : "download-outline"}
+              size={18}
+              color={isSavedLocally ? "#22c55e" : "#38bdf8"}
+            />
+            <Text style={[styles.saveGalleryText, isSavedLocally && { color: "#22c55e" }]}>
+              {isSavedLocally ? "บันทึกลงแกลเลอรีเรียบร้อย" : "💾 บันทึกรูปลง Gallery ในเครื่อง"}
+            </Text>
+          </Pressable>
 
-              return (
-                <Pressable
-                  key={filter.id}
-                  onPress={() => setSelectedFilter(filter.id)}
-                  style={[
-                    styles.filterButton,
-                    active && styles.filterButtonActive,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.filterText,
-                      active && styles.filterTextActive,
-                    ]}
-                  >
-                    {filter.name}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          {/* Actions */}
+          {/* Main Action Buttons */}
           <View style={styles.actionRow}>
-            <Pressable style={styles.retakeButton} onPress={retakePicture}>
-              <Text style={styles.retakeText}>RETAKE</Text>
+            <Pressable style={styles.retakeButton} onPress={retakePicture} disabled={isSubmitting}>
+              <Text style={styles.retakeText}>ถ่ายใหม่</Text>
             </Pressable>
 
-            <Pressable style={styles.saveButton} onPress={saveImage}>
-              <Text style={styles.saveText}>SAVE PHOTO</Text>
+            <Pressable style={styles.submitButton} onPress={submitQuestProof} disabled={isSubmitting}>
+              <Ionicons name="cloud-upload" size={18} color="#fff" />
+              <Text style={styles.submitText}>
+                {isSubmitting ? "กำลังส่ง..." : "ส่งหลักฐานรับรางวัล"}
+              </Text>
             </Pressable>
           </View>
         </View>
@@ -293,13 +282,14 @@ const styles = StyleSheet.create({
   },
   loading: {
     flex: 1,
-    backgroundColor: "#000",
+    backgroundColor: "#090d16",
     justifyContent: "center",
     alignItems: "center",
   },
   loadingText: {
-    color: "#fff",
-    fontSize: 16,
+    color: "#38bdf8",
+    fontSize: 15,
+    fontWeight: "700",
   },
   camera: {
     ...StyleSheet.absoluteFill,
@@ -309,67 +299,52 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   header: {
-    paddingHorizontal: 22,
+    paddingHorizontal: 20,
     paddingTop: 16,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-  },
-  headerButtons: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  flipButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    alignItems: "center",
+    backgroundColor: "rgba(15, 23, 42, 0.65)",
+    paddingBottom: 12,
   },
   logo: {
-    color: "#fff",
-    fontSize: 22,
+    color: "#38bdf8",
+    fontSize: 16,
     fontWeight: "900",
-    letterSpacing: 2,
+    letterSpacing: 1.5,
   },
   subtitle: {
-    color: "#aaa",
+    color: "#e2e8f0",
     fontSize: 12,
     marginTop: 2,
-  },
-  liveBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.5)",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 15,
   },
   liveDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: "#ff3b30",
-    marginRight: 6,
+    backgroundColor: "#ef4444",
   },
-  liveText: {
-    color: "#fff",
-    fontSize: 11,
-    fontWeight: "700",
+  flipButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    justifyContent: "center",
+    alignItems: "center",
   },
-  focusFrame: {
+  reticleContainer: {
     alignSelf: "center",
-    width: 250,
-    height: 250,
+    width: 280,
+    height: 280,
     position: "relative",
+    justifyContent: "center",
+    alignItems: "center",
   },
   corner: {
     position: "absolute",
-    width: 28,
-    height: 28,
-    borderColor: "#fff",
+    width: 30,
+    height: 30,
+    borderColor: "#38bdf8",
   },
   topLeft: {
     top: 0,
@@ -395,51 +370,41 @@ const styles = StyleSheet.create({
     borderBottomWidth: 3,
     borderRightWidth: 3,
   },
+  centerCross: {
+    opacity: 0.8,
+  },
+  scannerCoords: {
+    position: "absolute",
+    bottom: -28,
+    color: "#38bdf8",
+    fontSize: 10,
+    fontFamily: "monospace",
+    letterSpacing: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.75)",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
   bottomPanel: {
-    backgroundColor: "rgba(0,0,0,0.75)",
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
+    backgroundColor: "rgba(15, 23, 42, 0.85)",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     paddingHorizontal: 20,
-    paddingTop: 18,
+    paddingTop: 16,
     paddingBottom: 25,
     alignItems: "center",
   },
   sectionTitle: {
-    color: "#888",
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 2,
-    marginBottom: 12,
-  },
-  filterRow: {
-    flexDirection: "row",
-    gap: 10,
-    marginBottom: 20,
-  },
-  filterButton: {
-    paddingHorizontal: 18,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.1)",
-  },
-  filterButtonActive: {
-    backgroundColor: "#0a7ea4",
-  },
-  filterText: {
-    color: "#aaa",
+    color: "#94a3b8",
     fontSize: 12,
-    fontWeight: "600",
-  },
-  filterTextActive: {
-    color: "#fff",
-    fontWeight: "800",
+    marginBottom: 16,
   },
   shutter: {
     width: 74,
     height: 74,
     borderRadius: 37,
     borderWidth: 4,
-    borderColor: "#fff",
+    borderColor: "#38bdf8",
     justifyContent: "center",
     alignItems: "center",
   },
@@ -453,126 +418,180 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFill,
     resizeMode: "cover",
   },
-  blackWhitePreview: {
-    opacity: 0.85,
+  watermarkOverlay: {
+    position: "absolute",
+    top: 60,
+    left: 20,
+    right: 20,
+    backgroundColor: "rgba(15, 23, 42, 0.8)",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "rgba(56, 189, 248, 0.4)",
   },
-  vividPreview: {},
-  bwOverlay: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: "rgba(0,0,0,0.35)",
+  watermarkBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
-  vividOverlay: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: "rgba(255,120,20,0.08)",
+  watermarkText: {
+    color: "#38bdf8",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 1,
+  },
+  watermarkDate: {
+    color: "#cbd5e1",
+    fontSize: 11,
+    marginTop: 4,
   },
   previewOverlay: {
-    ...StyleSheet.absoluteFill,
+    flex: 1,
     justifyContent: "space-between",
   },
   previewHeader: {
-    paddingHorizontal: 22,
-    paddingTop: 18,
+    paddingHorizontal: 20,
+    paddingTop: 16,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
   previewTitle: {
     color: "#fff",
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "800",
-    letterSpacing: 2,
+    letterSpacing: 1,
   },
-  filterBadge: {
-    backgroundColor: "rgba(0,0,0,0.6)",
-    paddingHorizontal: 13,
-    paddingVertical: 7,
-    borderRadius: 20,
+  savedBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(34, 197, 94, 0.2)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#22c55e",
   },
-  filterBadgeText: {
-    color: "#fff",
+  savedBadgeText: {
+    color: "#4ade80",
     fontSize: 11,
     fontWeight: "700",
   },
   previewBottom: {
-    backgroundColor: "rgba(0,0,0,0.8)",
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
+    backgroundColor: "rgba(15, 23, 42, 0.95)",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     paddingHorizontal: 20,
     paddingTop: 18,
-    paddingBottom: 25,
+    paddingBottom: 28,
+    borderTopWidth: 1,
+    borderTopColor: "#334155",
+  },
+  previewQuestName: {
+    color: "#f8fafc",
+    fontSize: 17,
+    fontWeight: "800",
+  },
+  previewQuestDesc: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginTop: 4,
+    lineHeight: 18,
+  },
+  saveGalleryBtn: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(2, 132, 199, 0.15)",
+    borderWidth: 1,
+    borderColor: "#0284c7",
+    paddingVertical: 10,
+    borderRadius: 12,
+    marginTop: 14,
+  },
+  saveGalleryBtnDone: {
+    backgroundColor: "rgba(34, 197, 94, 0.15)",
+    borderColor: "#22c55e",
+  },
+  saveGalleryText: {
+    color: "#38bdf8",
+    fontSize: 13,
+    fontWeight: "700",
   },
   actionRow: {
     flexDirection: "row",
-    gap: 10,
-    marginTop: 20,
+    gap: 12,
+    marginTop: 14,
   },
   retakeButton: {
     flex: 1,
-    height: 52,
-    borderRadius: 26,
+    height: 50,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.4)",
+    borderColor: "#475569",
     justifyContent: "center",
     alignItems: "center",
   },
   retakeText: {
-    color: "#fff",
-    fontSize: 12,
+    color: "#cbd5e1",
+    fontSize: 14,
     fontWeight: "700",
-    letterSpacing: 1,
   },
-  saveButton: {
-    flex: 1.5,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: "#0a7ea4",
+  submitButton: {
+    flex: 2,
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: "#0284c7",
+    flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
+    gap: 8,
   },
-  saveText: {
+  submitText: {
     color: "#fff",
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "800",
-    letterSpacing: 1,
   },
   permissionScreen: {
     flex: 1,
-    backgroundColor: "#0b0b0b",
+    backgroundColor: "#090d16",
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 30,
   },
   iconCircle: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: "rgba(10,126,164,0.15)",
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    backgroundColor: "rgba(56, 189, 248, 0.15)",
     justifyContent: "center",
     alignItems: "center",
     marginBottom: 20,
   },
   permissionTitle: {
-    color: "#fff",
-    fontSize: 26,
+    color: "#f8fafc",
+    fontSize: 22,
     fontWeight: "800",
-    marginBottom: 10,
+    marginBottom: 8,
   },
   permissionDescription: {
-    color: "#999",
+    color: "#94a3b8",
     textAlign: "center",
-    fontSize: 15,
-    lineHeight: 22,
-    marginBottom: 28,
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 24,
   },
   allowButton: {
-    backgroundColor: "#0a7ea4",
-    paddingHorizontal: 30,
-    paddingVertical: 14,
-    borderRadius: 25,
+    backgroundColor: "#0284c7",
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 20,
   },
   allowButtonText: {
     color: "#fff",
     fontWeight: "700",
-    fontSize: 15,
+    fontSize: 14,
   },
 });

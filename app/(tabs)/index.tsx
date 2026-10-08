@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect, useMemo, useCallback } from "react";
 import {
   FlatList,
   Pressable,
@@ -6,232 +6,437 @@ import {
   StyleSheet,
   Text,
   View,
+  Alert,
+  Switch,
 } from "react-native";
-import MapView, { Marker } from "react-native-maps";
+import MapView, { Marker, Circle } from "react-native-maps";
+import * as Location from "expo-location";
+import * as Haptics from "expo-haptics";
+import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import { useGameStore } from "@/storage/useGameStore";
+import { calculateDistance, formatDistance } from "@/features/events/types/gameMath";
+import { Quest } from "@/features/events/types/quest";
 
-type Place = {
-  id: string;
-  name: string;
-  description: string;
-  latitude: number;
-  longitude: number;
-};
-
-const PLACES: Place[] = [
-  {
-    id: "1",
-    name: "มหาวิทยาลัยขอนแก่น",
-    description: "Khon Kaen University",
-    latitude: 16.4730,
-    longitude: 102.8206,
-  },
-  {
-    id: "2",
-    name: "บึงแก่นนคร",
-    description: "Bueng Kaen Nakhon",
-    latitude: 16.4205,
-    longitude: 102.8457,
-  },
-  {
-    id: "3",
-    name: "วัดหนองแวง",
-    description: "Wat Nong Wang",
-    latitude: 16.4158,
-    longitude: 102.8388,
-  },
-  {
-    id: "4",
-    name: "Central Khon Kaen",
-    description: "ศูนย์การค้าเซ็นทรัล ขอนแก่น",
-    latitude: 16.4324,
-    longitude: 102.8265,
-  },
-  {
-    id: "5",
-    name: "ตลาดต้นตาล",
-    description: "Ton Tann Market",
-    latitude: 16.4215,
-    longitude: 102.8094,
-  },
-  {
-    id: "6",
-    name: "ศาลหลักเมืองขอนแก่น",
-    description: "Khon Kaen City Pillar Shrine",
-    latitude: 16.4327,
-    longitude: 102.8344,
-  },
-  {
-    id: "7",
-    name: "บึงทุ่งสร้าง",
-    description: "Bueng Thung Sang",
-    latitude: 16.4564,
-    longitude: 102.8079,
-  },
-  {
-    id: "8",
-    name: "พิพิธภัณฑสถานแห่งชาติ ขอนแก่น",
-    description: "Khon Kaen National Museum",
-    latitude: 16.4416,
-    longitude: 102.8295,
-  },
-  {
-    id: "9",
-    name: "สวนสาธารณะบึงทุ่งสร้าง",
-    description: "Public recreation area",
-    latitude: 16.4545,
-    longitude: 102.8100,
-  },
-  {
-    id: "10",
-    name: "สถานีรถไฟขอนแก่น",
-    description: "Khon Kaen Railway Station",
-    latitude: 16.4320,
-    longitude: 102.8277,
-  },
-];
-
+// พิกัดเริ่มต้นใจกลาง มหาวิทยาลัยขอนแก่น
 const INITIAL_REGION = {
-  latitude: 16.441,
-  longitude: 102.828,
-  latitudeDelta: 0.08,
-  longitudeDelta: 0.08,
+  latitude: 16.4730,
+  longitude: 102.8206,
+  latitudeDelta: 0.04,
+  longitudeDelta: 0.04,
 };
 
-export default function HomeScreen() {
+export default function QuestMapScreen() {
+  const router = useRouter();
   const mapRef = useRef<MapView>(null);
 
-  const [selectedPlace, setSelectedPlace] =
-    useState<Place>(PLACES[0]);
+  const quests = useGameStore((s) => s.quests);
+  const player = useGameStore((s) => s.player);
+  const simulationLocation = useGameStore((s) => s.simulationLocation);
+  const isSimulatorActive = useGameStore((s) => s.isSimulatorActive);
+  const setSimulatedLocation = useGameStore((s) => s.setSimulatedLocation);
+  const toggleSimulator = useGameStore((s) => s.toggleSimulator);
+  const completeQuest = useGameStore((s) => s.completeQuest);
 
-  const selectPlace = (place: Place) => {
-    setSelectedPlace(place);
+  const [realLocation, setRealLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [selectedQuest, setSelectedQuest] = useState<Quest>(quests[0]);
+  const [hasNotifiedNear, setHasNotifiedNear] = useState<Record<string, boolean>>({});
 
+  // ตำแหน่งผู้เล่นปัจจุบัน (หากเปิด Simulation Mode จะใช้พิกัดจำลอง)
+  const currentLocation = useMemo(() => {
+    if (isSimulatorActive && simulationLocation) {
+      return simulationLocation;
+    }
+    return realLocation || { latitude: 16.4730, longitude: 102.8206 };
+  }, [isSimulatorActive, simulationLocation, realLocation]);
+
+  // คำนวณระยะห่างของเควสต์ทั้งหมดเทียบกับตำแหน่งปัจจุบัน
+  const questsWithDistance = useMemo(() => {
+    return quests.map((q) => {
+      const dist = calculateDistance(
+        currentLocation.latitude,
+        currentLocation.longitude,
+        q.location.latitude,
+        q.location.longitude
+      );
+      const isWithinRadius = dist <= q.targetRadiusMeters;
+      return {
+        ...q,
+        distanceMeters: dist,
+        isWithinRadius,
+      };
+    });
+  }, [quests, currentLocation]);
+
+  // ดึง GPS จริงของเครื่อง
+  useEffect(() => {
+    let subscriber: Location.LocationSubscription | null = null;
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Denied', 'เปิดการเข้าถึงตำแหน่ง GPS เพื่อเล่น CampusQuest');
+        return;
+      }
+
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      setRealLocation({
+        latitude: loc.coords.latitude,
+        longitude: loc.coords.longitude,
+      });
+
+      subscriber = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Balanced,
+          distanceInterval: 10,
+        },
+        (newLoc) => {
+          setRealLocation({
+            latitude: newLoc.coords.latitude,
+            longitude: newLoc.coords.longitude,
+          });
+        }
+      );
+    })();
+
+    return () => {
+      subscriber?.remove();
+    };
+  }, []);
+
+  // ตรวจจับเมื่อผู้เล่นเดินเข้าสู่รัศมีเควสต์ (Proximity Trigger & Haptics W11)
+  useEffect(() => {
+    questsWithDistance.forEach((q) => {
+      if (q.isWithinRadius && q.status !== 'completed' && !hasNotifiedNear[q.id]) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        setHasNotifiedNear((prev) => ({ ...prev, [q.id]: true }));
+      }
+    });
+  }, [questsWithDistance, hasNotifiedNear]);
+
+  const currentSelectedWithDist = useMemo(() => {
+    return questsWithDistance.find((q) => q.id === selectedQuest.id) || questsWithDistance[0];
+  }, [questsWithDistance, selectedQuest]);
+
+  const handleSelectQuest = useCallback((quest: Quest) => {
+    setSelectedQuest(quest);
     mapRef.current?.animateToRegion(
       {
-        latitude: place.latitude,
-        longitude: place.longitude,
-        latitudeDelta: 0.01,
-        longitudeDelta: 0.01,
+        latitude: quest.location.latitude,
+        longitude: quest.location.longitude,
+        latitudeDelta: 0.015,
+        longitudeDelta: 0.015,
       },
-      700
+      600
     );
+  }, []);
+
+  // ฟังก์ชัน Simulation: วาร์ปผู้เล่นไปยังหน้าเควสต์ที่เลือก (สะดวกมากสำหรับการนำเสนอผลงาน!)
+  const handleTeleportToSelected = () => {
+    toggleSimulator(true);
+    setSimulatedLocation({
+      latitude: selectedQuest.location.latitude,
+      longitude: selectedQuest.location.longitude,
+    });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    Alert.alert(
+      '🌀 Teleport สำเร็จ (Simulation)',
+      `คุณได้วาร์ปมาถึงพิกัดของเควสต์ "${selectedQuest.title}" แล้ว! ขณะนี้อยู่ในรัศมีทำภารกิจ`
+    );
+  };
+
+  const handleCheckInOrVerify = () => {
+    if (!currentSelectedWithDist.isWithinRadius) {
+      Alert.alert(
+        '⚠️ อยู่นอกระยะภารกิจ',
+        `คุณอยู่ห่างจากจุดเป้าหมาย ${formatDistance(currentSelectedWithDist.distanceMeters)} (ต้องเข้าใกล้ภายในระยะ ${selectedQuest.targetRadiusMeters} ม.)\n\n💡 ทิปสำหรับพรีเซนต์: เปิดสวิตช์ Simulation หรือกดปุ่ม 'Teleport' ด้านบน`
+      );
+      return;
+    }
+
+    if (selectedQuest.requiredProofPhoto) {
+      // ไปหน้ากล้องเพื่อถ่ายภาพยืนยัน
+      router.push({
+        pathname: '/(tabs)/camera',
+        params: { questId: selectedQuest.id, questTitle: selectedQuest.title },
+      });
+    } else {
+      // สำเร็จเควสต์ทันที
+      completeQuest(selectedQuest.id);
+      Alert.alert('🎉 ภารกิจสำเร็จ!', `ยินดีด้วย! คุณได้รับ +${selectedQuest.rewardXp} XP`);
+    }
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
+      {/* RPG Top HUD Header */}
+      <View style={styles.hudHeader}>
+        <View style={styles.playerInfoRow}>
+          <View style={styles.avatarCircle}>
+            <Ionicons name="shield" size={24} color="#38bdf8" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={styles.playerName}>{player.name}</Text>
+              <View style={styles.levelBadge}>
+                <Text style={styles.levelText}>Lv. {player.level}</Text>
+              </View>
+            </View>
+            {/* XP Bar */}
+            <View style={styles.xpBarTrack}>
+              <View
+                style={[
+                  styles.xpBarFill,
+                  { width: `${Math.min(100, (player.currentXp / player.requiredXp) * 100)}%` },
+                ]}
+              />
+            </View>
+            <Text style={styles.xpText}>
+              XP: {player.currentXp} / {player.requiredXp}
+            </Text>
+          </View>
 
-      <View style={styles.header}>
-        <Text style={styles.title}>
-          KHON KAEN POI
-        </Text>
+          <View style={styles.coinsBadge}>
+            <Ionicons name="sparkles" size={14} color="#eab308" />
+            <Text style={styles.coinsText}>{player.coins}</Text>
+          </View>
+        </View>
 
-        <Text style={styles.subtitle}>
-          Explore important places
-        </Text>
+        {/* Demo Simulator Control Bar */}
+        <View style={styles.simulatorBar}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Ionicons
+              name={isSimulatorActive ? "flash" : "locate-outline"}
+              size={16}
+              color={isSimulatorActive ? "#38bdf8" : "#94a3b8"}
+            />
+            <Text style={styles.simText}>Simulation Mode (Demo)</Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            {isSimulatorActive && (
+              <Pressable style={styles.teleportBtn} onPress={handleTeleportToSelected}>
+                <Text style={styles.teleportBtnText}>🌀 วาร์ปมาจุดนี้</Text>
+              </Pressable>
+            )}
+            <Switch
+              value={isSimulatorActive}
+              onValueChange={toggleSimulator}
+              trackColor={{ false: "#334155", true: "#0284c7" }}
+              thumbColor={isSimulatorActive ? "#38bdf8" : "#f4f3f4"}
+            />
+          </View>
+        </View>
       </View>
 
-      {/* Map */}
-
+      {/* Map View */}
       <View style={styles.mapContainer}>
         <MapView
           ref={mapRef}
           style={styles.map}
           initialRegion={INITIAL_REGION}
+          showsUserLocation={!isSimulatorActive}
         >
-          <Marker
-            coordinate={{
-              latitude: selectedPlace.latitude,
-              longitude: selectedPlace.longitude,
-            }}
-            title={selectedPlace.name}
-            description={selectedPlace.description}
-          />
+          {/* Simulated Player Marker */}
+          {isSimulatorActive && (
+            <Marker
+              coordinate={currentLocation}
+              title="ตำแหน่งจำลองผู้เล่น (You)"
+              pinColor="#38bdf8"
+            >
+              <View style={styles.playerMarkerCircle}>
+                <Ionicons name="navigate" size={18} color="#fff" />
+              </View>
+            </Marker>
+          )}
+
+          {/* Quest Markers */}
+          {questsWithDistance.map((q) => {
+            const isCompleted = q.status === 'completed';
+            const isTarget = q.id === selectedQuest.id;
+
+            return (
+              <React.Fragment key={q.id}>
+                {/* Detection Circle Zone */}
+                <Circle
+                  center={q.location}
+                  radius={q.targetRadiusMeters}
+                  fillColor={
+                    isCompleted
+                      ? "rgba(34, 197, 94, 0.15)"
+                      : q.isWithinRadius
+                      ? "rgba(56, 189, 248, 0.35)"
+                      : "rgba(234, 179, 8, 0.18)"
+                  }
+                  strokeColor={
+                    isCompleted
+                      ? "#22c55e"
+                      : q.isWithinRadius
+                      ? "#38bdf8"
+                      : "#eab308"
+                  }
+                  strokeWidth={2}
+                />
+
+                <Marker
+                  coordinate={q.location}
+                  title={q.title}
+                  description={formatDistance(q.distanceMeters)}
+                  onPress={() => handleSelectQuest(q)}
+                >
+                  <View
+                    style={[
+                      styles.questPin,
+                      isCompleted && styles.questPinCompleted,
+                      isTarget && styles.questPinTarget,
+                    ]}
+                  >
+                    <Ionicons
+                      name={
+                        isCompleted
+                          ? "checkmark"
+                          : q.category === 'secret'
+                          ? "skull"
+                          : "flag"
+                      }
+                      size={18}
+                      color="#fff"
+                    />
+                  </View>
+                </Marker>
+              </React.Fragment>
+            );
+          })}
         </MapView>
 
-        <View style={styles.selectedCard}>
-          <Text style={styles.selectedLabel}>
-            SELECTED PLACE
+        {/* Selected Quest Floating HUD Card */}
+        <View style={styles.floatingQuestCard}>
+          <View style={styles.cardHeader}>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                <Text style={styles.questCategoryBadge}>{currentSelectedWithDist.category.toUpperCase()}</Text>
+                <Text style={styles.distanceBadge}>
+                  📍 ห่าง {formatDistance(currentSelectedWithDist.distanceMeters)}
+                </Text>
+              </View>
+              <Text style={styles.cardQuestTitle} numberOfLines={1}>
+                {currentSelectedWithDist.title}
+              </Text>
+            </View>
+
+            <View style={styles.rewardBox}>
+              <Text style={styles.rewardXpText}>+{currentSelectedWithDist.rewardXp} XP</Text>
+              <Text style={styles.rewardCoinText}>+{currentSelectedWithDist.rewardCoins} 🪙</Text>
+            </View>
+          </View>
+
+          <Text style={styles.cardLocationName}>
+            🏛️ {currentSelectedWithDist.location.name}
           </Text>
 
-          <Text style={styles.selectedName}>
-            {selectedPlace.name}
-          </Text>
-
-          <Text style={styles.selectedDescription}>
-            {selectedPlace.description}
-          </Text>
+          {/* Action Trigger Button */}
+          {currentSelectedWithDist.status === 'completed' ? (
+            <View style={styles.completedBanner}>
+              <Ionicons name="checkmark-circle" size={18} color="#22c55e" />
+              <Text style={styles.completedBannerText}>ภารกิจนี้ทำสำเร็จแล้ว</Text>
+            </View>
+          ) : (
+            <Pressable
+              style={[
+                styles.actionBtn,
+                currentSelectedWithDist.isWithinRadius
+                  ? styles.actionBtnActive
+                  : styles.actionBtnInactive,
+              ]}
+              onPress={handleCheckInOrVerify}
+            >
+              <Ionicons
+                name={
+                  currentSelectedWithDist.requiredProofPhoto
+                    ? "camera"
+                    : "location"
+                }
+                size={18}
+                color="#fff"
+              />
+              <Text style={styles.actionBtnText}>
+                {currentSelectedWithDist.isWithinRadius
+                  ? currentSelectedWithDist.requiredProofPhoto
+                    ? "📸 ถ่ายภาพยืนยันเควสต์"
+                    : "🚩 เช็กอินสำเร็จเควสต์"
+                  : `เดินเข้าใกล้จุดเป้าหมาย (< ${currentSelectedWithDist.targetRadiusMeters} ม.)`}
+              </Text>
+            </Pressable>
+          )}
         </View>
       </View>
 
-      {/* List Header */}
+      {/* Nearby Quests Bottom List */}
+      <View style={styles.listSection}>
+        <View style={styles.listHeaderRow}>
+          <Text style={styles.listTitle}>ภารกิจและเควสต์รอบตัว (Quests)</Text>
+          <Text style={styles.listCount}>
+            {questsWithDistance.filter((q) => q.status === 'completed').length}/{questsWithDistance.length} สำเร็จแล้ว
+          </Text>
+        </View>
 
-      <View style={styles.listHeader}>
-        <Text style={styles.listTitle}>
-          Important Places
-        </Text>
+        <FlatList
+          data={questsWithDistance}
+          keyExtractor={(item) => item.id}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.listContent}
+          renderItem={({ item }) => {
+            const isSelected = selectedQuest.id === item.id;
+            const isCompleted = item.status === 'completed';
 
-        <Text style={styles.placeCount}>
-          {PLACES.length} Places
-        </Text>
+            return (
+              <Pressable
+                onPress={() => handleSelectQuest(item)}
+                style={[
+                  styles.questCard,
+                  isSelected && styles.questCardSelected,
+                  isCompleted && styles.questCardCompleted,
+                ]}
+              >
+                <View
+                  style={[
+                    styles.questIconBox,
+                    isCompleted ? { backgroundColor: '#15803d' } : { backgroundColor: '#0284c7' },
+                  ]}
+                >
+                  <Ionicons
+                    name={isCompleted ? "checkmark-done" : "map"}
+                    size={20}
+                    color="#fff"
+                  />
+                </View>
+
+                <View style={{ flex: 1, paddingHorizontal: 10 }}>
+                  <Text
+                    style={[styles.questItemTitle, isSelected && { color: '#38bdf8' }]}
+                    numberOfLines={1}
+                  >
+                    {item.title}
+                  </Text>
+                  <Text style={styles.questItemSub} numberOfLines={1}>
+                    {item.location.name}
+                  </Text>
+                </View>
+
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text
+                    style={[
+                      styles.questItemDist,
+                      item.isWithinRadius && { color: '#22c55e', fontWeight: '800' },
+                    ]}
+                  >
+                    {formatDistance(item.distanceMeters)}
+                  </Text>
+                  <Text style={styles.questItemReward}>+{item.rewardXp} XP</Text>
+                </View>
+              </Pressable>
+            );
+          }}
+        />
       </View>
-
-      {/* Place List */}
-
-      <FlatList
-        data={PLACES}
-        keyExtractor={(item) => item.id}
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.listContent}
-        renderItem={({ item, index }) => {
-          const isSelected =
-            selectedPlace.id === item.id;
-
-          return (
-            <Pressable
-              onPress={() => selectPlace(item)}
-              style={[
-                styles.placeCard,
-                isSelected && styles.placeCardSelected,
-              ]}
-            >
-              <View style={styles.numberBox}>
-                <Text
-                  style={styles.numberText}
-                >
-                  {index + 1}
-                </Text>
-              </View>
-
-              <View style={styles.placeInfo}>
-                <Text
-                  style={[
-                    styles.placeName,
-                    isSelected &&
-                      styles.placeNameSelected,
-                  ]}
-                >
-                  {item.name}
-                </Text>
-
-                <Text
-                  style={[
-                    styles.placeDescription,
-                    isSelected &&
-                      styles.placeDescriptionSelected,
-                  ]}
-                >
-                  {item.description}
-                </Text>
-              </View>
-
-              <Text style={styles.pinIcon}>
-                📍
-              </Text>
-            </Pressable>
-          );
-        }}
-      />
     </SafeAreaView>
   );
 }
@@ -239,159 +444,293 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F5F7FB",
+    backgroundColor: "#090d16",
   },
-
-  // Header
-
-  header: {
-    backgroundColor: "#1E3A5F",
-    paddingHorizontal: 20,
-    paddingTop: 18,
-    paddingBottom: 20,
+  hudHeader: {
+    backgroundColor: "#0f172a",
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1e293b",
   },
-
-  title: {
-    color: "#FFFFFF",
-    fontSize: 24,
-    fontWeight: "800",
-    letterSpacing: 1,
+  playerInfoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
   },
-
-  subtitle: {
-    color: "#BFD0E5",
-    fontSize: 13,
-    marginTop: 4,
-  },
-
-  // Map
-
-  mapContainer: {
-    height: 280,
-    margin: 16,
+  avatarCircle: {
+    width: 44,
+    height: 44,
     borderRadius: 22,
-    overflow: "hidden",
-    backgroundColor: "#DDD",
-    elevation: 4,
+    backgroundColor: "#1e293b",
+    borderWidth: 2,
+    borderColor: "#38bdf8",
+    justifyContent: "center",
+    alignItems: "center",
   },
-
+  playerName: {
+    color: "#f8fafc",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  levelBadge: {
+    backgroundColor: "#0284c7",
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 8,
+  },
+  levelText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  xpBarTrack: {
+    height: 6,
+    backgroundColor: "#1e293b",
+    borderRadius: 3,
+    marginTop: 4,
+    overflow: "hidden",
+  },
+  xpBarFill: {
+    height: "100%",
+    backgroundColor: "#38bdf8",
+  },
+  xpText: {
+    color: "#94a3b8",
+    fontSize: 10,
+    marginTop: 2,
+  },
+  coinsBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#1e293b",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#eab308",
+  },
+  coinsText: {
+    color: "#fef08a",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  simulatorBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#1e293b",
+  },
+  simText: {
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  teleportBtn: {
+    backgroundColor: "#0369a1",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  teleportBtnText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  mapContainer: {
+    height: 290,
+    position: "relative",
+  },
   map: {
     width: "100%",
     height: "100%",
   },
-
-  selectedCard: {
-    position: "absolute",
-    left: 14,
-    right: 14,
-    bottom: 14,
-    backgroundColor: "rgba(255,255,255,0.95)",
+  playerMarkerCircle: {
+    width: 32,
+    height: 32,
     borderRadius: 16,
-    padding: 14,
+    backgroundColor: "#0284c7",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#fff",
   },
-
-  selectedLabel: {
-    color: "#6B7280",
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 1,
+  questPin: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#f59e0b",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#fff",
+    elevation: 4,
   },
-
-  selectedName: {
-    color: "#1F2937",
-    fontSize: 16,
-    fontWeight: "800",
-    marginTop: 4,
+  questPinCompleted: {
+    backgroundColor: "#16a34a",
   },
-
-  selectedDescription: {
-    color: "#6B7280",
-    fontSize: 12,
-    marginTop: 2,
+  questPinTarget: {
+    borderColor: "#38bdf8",
+    borderWidth: 3,
+    transform: [{ scale: 1.15 }],
   },
-
-  // List
-
-  listHeader: {
-    paddingHorizontal: 20,
-    marginBottom: 8,
+  floatingQuestCard: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    bottom: 12,
+    backgroundColor: "rgba(15, 23, 42, 0.95)",
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#334155",
+    elevation: 6,
+  },
+  cardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
-
-  listTitle: {
-    color: "#1F2937",
-    fontSize: 18,
+  questCategoryBadge: {
+    color: "#38bdf8",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+  distanceBadge: {
+    color: "#fbbf24",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  cardQuestTitle: {
+    color: "#f8fafc",
+    fontSize: 15,
     fontWeight: "800",
   },
-
-  placeCount: {
-    color: "#6B7280",
+  rewardBox: {
+    alignItems: "flex-end",
+  },
+  rewardXpText: {
+    color: "#38bdf8",
+    fontWeight: "800",
     fontSize: 12,
   },
-
-  listContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 30,
+  rewardCoinText: {
+    color: "#fef08a",
+    fontSize: 11,
+    fontWeight: "600",
   },
-
-  // Place Card
-
-  placeCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 10,
+  cardLocationName: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginVertical: 4,
+  },
+  actionBtn: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 10,
+    borderRadius: 12,
+    marginTop: 6,
+  },
+  actionBtnActive: {
+    backgroundColor: "#0284c7",
+  },
+  actionBtnInactive: {
+    backgroundColor: "#334155",
+  },
+  actionBtnText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  completedBanner: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: "rgba(34, 197, 94, 0.15)",
+    marginTop: 6,
+  },
+  completedBannerText: {
+    color: "#4ade80",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  listSection: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  listHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  listTitle: {
+    color: "#f8fafc",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  listCount: {
+    color: "#94a3b8",
+    fontSize: 12,
+  },
+  listContent: {
+    paddingBottom: 24,
+  },
+  questCard: {
+    backgroundColor: "#0f172a",
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 8,
     flexDirection: "row",
     alignItems: "center",
-    elevation: 2,
+    borderWidth: 1,
+    borderColor: "#1e293b",
   },
-
-  placeCardSelected: {
-    backgroundColor: "#1E3A5F",
+  questCardSelected: {
+    borderColor: "#0284c7",
+    backgroundColor: "#13233b",
   },
-
-  numberBox: {
+  questCardCompleted: {
+    opacity: 0.65,
+  },
+  questIconBox: {
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: "#E8EEF5",
     justifyContent: "center",
     alignItems: "center",
-    marginRight: 12,
   },
-
-  numberText: {
-    color: "#1E3A5F",
-    fontWeight: "800",
-  },
-
-  placeInfo: {
-    flex: 1,
-  },
-
-  placeName: {
-    color: "#1F2937",
-    fontSize: 15,
+  questItemTitle: {
+    color: "#f8fafc",
+    fontSize: 14,
     fontWeight: "700",
   },
-
-  placeNameSelected: {
-    color: "#FFFFFF",
-  },
-
-  placeDescription: {
-    color: "#6B7280",
+  questItemSub: {
+    color: "#94a3b8",
     fontSize: 11,
-    marginTop: 3,
+    marginTop: 2,
   },
-
-  placeDescriptionSelected: {
-    color: "#C9D9EA",
+  questItemDist: {
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "600",
   },
-
-  pinIcon: {
-    fontSize: 20,
+  questItemReward: {
+    color: "#38bdf8",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 2,
   },
 });

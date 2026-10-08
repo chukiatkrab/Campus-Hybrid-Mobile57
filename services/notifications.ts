@@ -16,13 +16,13 @@ export interface CampusEvent {
   description: string;
 }
 
-// Sample Campus Events (สามารถขยายหรือดึงจาก API ได้)
+// Sample Campus Events
 export const CAMPUS_EVENTS: CampusEvent[] = [
   {
     id: 'evt-1',
     title: 'KKU Tech Expo & Hackathon 2026',
     category: 'Technology & Academic',
-    startsAt: new Date(Date.now() + 45 * 60 * 1000).toISOString(), // เริ่มอีก 45 นาที
+    startsAt: new Date(Date.now() + 45 * 60 * 1000).toISOString(),
     location: {
       name: 'อุทยานวิทยาศาสตร์ ภาคตะวันออกเฉียงเหนือ มข.',
       latitude: 16.4730,
@@ -34,7 +34,7 @@ export const CAMPUS_EVENTS: CampusEvent[] = [
     id: 'evt-2',
     title: 'ดนตรีริมบึงสีฐาน (Si Than Music Fest)',
     category: 'Cultural & Art',
-    startsAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(), // เริ่มอีก 2 ชม.
+    startsAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
     location: {
       name: 'ริมบึงสีฐาน มหาวิทยาลัยขอนแก่น',
       latitude: 16.4564,
@@ -46,7 +46,7 @@ export const CAMPUS_EVENTS: CampusEvent[] = [
     id: 'evt-3',
     title: 'บรรยายพิเศษ: Future AI & Autonomous Agents',
     category: 'Lecture & Seminar',
-    startsAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // เริ่มพรุ่งนี้
+    startsAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     location: {
       name: 'วิทยาลัยการคอมพิวเตอร์ (CP KKU)',
       latitude: 16.4745,
@@ -72,44 +72,77 @@ Notifications.setNotificationHandler({
 export async function ensureNotificationPermission(): Promise<boolean> {
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync(REMINDER_CHANNEL, {
-      name: 'การเตือนกิจกรรม (Event Reminders)',
-      importance: Notifications.AndroidImportance.HIGH,
+      name: 'Campus Quest Notifications',
+      importance: Notifications.AndroidImportance.MAX,
       sound: 'default',
       vibrationPattern: [0, 250, 250, 250],
       lightColor: '#0a7ea4',
+      enableVibrate: true,
+      showBadge: true,
     });
   }
 
   const current = await Notifications.getPermissionsAsync();
   if (current.granted) return true;
 
-  const requested = await Notifications.requestPermissionsAsync();
+  const requested = await Notifications.requestPermissionsAsync({
+    ios: {
+      allowAlert: true,
+      allowBadge: true,
+      allowSound: true,
+    },
+  });
   return requested.granted;
 }
 
 /**
- * ตั้งการแจ้งเตือนกิจกรรมล่วงหน้า 30 นาที (หรือ Demo ใน 5 วินาทีหากกิจกรรมใกล้เริ่ม)
+ * แจ้งเตือนด่วนทันทีสำหรับความสำเร็จของเควสต์ หรือการเข้าใกล้จุดหมาย (W11)
+ */
+export async function triggerNotificationNow(title: string, body: string, data?: Record<string, any>): Promise<string> {
+  await ensureNotificationPermission();
+  return await Notifications.scheduleNotificationAsync({
+    content: {
+      title,
+      body,
+      data: data || {},
+      sound: 'default',
+    },
+    trigger: null, // trigger immediately
+  });
+}
+
+/**
+ * ตั้งการแจ้งเตือนกิจกรรมตามเวลาที่กำหนดได้จริง (Custom Date / ISO string)
  */
 export async function scheduleEventReminder(
   event: CampusEvent,
-  options?: { isDemoInstant?: boolean }
+  options?: { customNotifyAt?: Date | string; notifyMinutesBefore?: number }
 ): Promise<string> {
   const granted = await ensureNotificationPermission();
   if (!granted) throw new Error('notification-permission-denied');
 
-  // คำนวณเวลาเตือนล่วงหน้า 30 นาที
-  let triggerDate = new Date(new Date(event.startsAt).getTime() - 30 * 60 * 1000);
+  let triggerDate: Date;
 
-  // ถ้าต้องการทดสอบทันที (Demo Trigger ใน 5 วินาที) หรือถ้าเวลา 30 นาทีผ่านมาแล้ว
-  if (options?.isDemoInstant || triggerDate <= new Date()) {
-    triggerDate = new Date(Date.now() + 5 * 1000); // แจ้งเตือนใน 5 วินาทีเพื่อการทดสอบ
+  if (options?.customNotifyAt) {
+    triggerDate = new Date(options.customNotifyAt);
+  } else if (options?.notifyMinutesBefore !== undefined) {
+    triggerDate = new Date(new Date(event.startsAt).getTime() - options.notifyMinutesBefore * 60 * 1000);
+  } else {
+    // กำหนดเวลาแจ้งเตือนตรงตามเวลาเริ่มกิจกรรม
+    triggerDate = new Date(event.startsAt);
+  }
+
+  // หากเวลาที่ตั้งผ่านไปแล้ว ให้แจ้งเตือนในอีก 10 วินาทีเพื่อไม่ให้เกิดข้อผิดพลาดของ OS
+  if (triggerDate.getTime() <= Date.now()) {
+    triggerDate = new Date(Date.now() + 10 * 1000);
   }
 
   return await Notifications.scheduleNotificationAsync({
     content: {
-      title: `ใกล้ถึงเวลา: ${event.title}`,
-      body: `กิจกรรมจะเริ่มเร็วๆ นี้ที่ ${event.location.name} แตะเพื่อดูรายละเอียด`,
-      data: { eventId: event.id }, // ตามเกณฑ์ DoD: มีเฉพาะ eventId ไม่ใส่ข้อมูลอ่อนไหว
+      title: `🔔 ถึงเวลากิจกรรม: ${event.title}`,
+      body: `กิจกรรมเริ่มแล้ว ณ ${event.location.name} แตะเพื่อเปิดแอปและเดินทางไปเช็กอิน!`,
+      data: { eventId: event.id },
+      sound: 'default',
     },
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
@@ -119,16 +152,10 @@ export async function scheduleEventReminder(
   });
 }
 
-/**
- * ยกเลิก Notification
- */
 export async function cancelEventReminder(notificationId: string): Promise<void> {
   await Notifications.cancelScheduledNotificationAsync(notificationId);
 }
 
-/**
- * ดึงรายการ Scheduled Notifications ทั้งหมดในระบบ
- */
 export async function getAllScheduledReminders(): Promise<Notifications.NotificationRequest[]> {
   return await Notifications.getAllScheduledNotificationsAsync();
 }

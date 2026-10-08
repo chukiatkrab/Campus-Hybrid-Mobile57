@@ -1,52 +1,59 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
-
+import { Ionicons } from '@expo/vector-icons';
 import { HapticTab } from '@/components/haptic-tab';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
-
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
+        tabBarActiveTintColor: '#38bdf8',
+        tabBarInactiveTintColor: '#64748b',
         headerShown: false,
         tabBarButton: HapticTab,
         tabBarStyle: {
-          height: 60,
+          height: 62,
           paddingBottom: 8,
           paddingTop: 6,
+          backgroundColor: '#0f172a',
+          borderTopColor: '#1e293b',
+          borderTopWidth: 1,
         },
       }}>
       <Tabs.Screen
-        name="profile"
-        options={{
-          title: 'Profile',
-          tabBarIcon: ({ color }) => <IconSymbol size={26} name="person.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
         name="index"
         options={{
-          title: 'Places',
-          tabBarIcon: ({ color }) => <IconSymbol size={26} name="map.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="camera"
-        options={{
-          title: 'Camera',
-          tabBarIcon: ({ color }) => <IconSymbol size={26} name="camera.fill" color={color} />,
+          title: 'Quest Radar',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? "map" : "map-outline"} size={24} color={color} />
+          ),
         }}
       />
       <Tabs.Screen
         name="events"
         options={{
-          title: 'Events',
-          tabBarIcon: ({ color }) => <IconSymbol size={26} name="bell.fill" color={color} />,
+          title: 'Journal',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? "book" : "book-outline"} size={24} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="camera"
+        options={{
+          title: 'Scanner',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? "scan-circle" : "scan-circle-outline"} size={26} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: 'Character',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? "shield" : "shield-outline"} size={24} color={color} />
+          ),
         }}
       />
       <Tabs.Screen
